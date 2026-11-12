@@ -1,0 +1,140 @@
+Evidence generated with: Python 3.9.6 on Darwin 25.6.0
+(`python` is not on PATH on this machine, so `python3` was used; the commands are otherwise identical.)
+
+$ python3 run_demo.py
+
+========================================================================
+SCENARIO 1: Out-of-order delivery and duplicate event (ORDER-1001)
+========================================================================
+  EXPECTED: v2 held as pending, v1 applied, v2 released, duplicate v2 ignored,
+            final status PAID, applied versions [1, 2]
+
+  Receive version 2: PAID
+    -> PENDING: version 2 is pending because version 1 is missing
+    state: status=UNKNOWN, last_applied_version=0, applied_versions=[], pending_versions=[2]
+  [PASS] version 2 is PENDING because version 1 is missing
+  [PASS] version 2 did not change the status (still UNKNOWN)
+  [PASS] order is waiting for version 1
+
+  Receive version 1: CREATED
+    -> APPLIED: version 1 is applied
+    -> APPLIED: pending version 2 is now applied (PAID)
+    state: status=PAID, last_applied_version=2, applied_versions=[1, 2], pending_versions=[]
+  [PASS] version 1 is APPLIED
+  [PASS] pending version 2 is now APPLIED automatically
+  [PASS] pending collection is empty
+
+  Receive version 2 again: PAID
+    -> IGNORED DUPLICATE: duplicate version 2 is ignored (last applied version is 2)
+    state: status=PAID, last_applied_version=2, applied_versions=[1, 2], pending_versions=[]
+  [PASS] duplicate version 2 is IGNORED DUPLICATE
+  [PASS] duplicate did not change status or history
+  [PASS] duplicate version 2 is recorded in ignored duplicates
+
+  Final result
+    final status is PAID
+    final applied versions are [1, 2]
+    ignored duplicates: ['ORDER-1001 v2 PAID']
+  [PASS] final status is PAID
+  [PASS] final applied versions are [1, 2]
+
+========================================================================
+SCENARIO 2: Missing events (ORDER-MISSING)
+========================================================================
+  EXPECTED: v3 held as PENDING, status stays UNKNOWN (no jump to SHIPPED),
+            missing versions 1 and 2 identified, waiting for version 1
+
+  Receive version 3: SHIPPED   (versions 1 and 2 are never sent)
+    -> PENDING: version 3 is pending because versions 1 and 2 are missing
+    state: status=UNKNOWN, last_applied_version=0, applied_versions=[], pending_versions=[3]
+    missing versions: [1, 2]
+    waiting for version: 1
+  [PASS] version 3 is PENDING (not applied)
+  [PASS] order did NOT jump to SHIPPED
+  [PASS] current status remains UNKNOWN
+  [PASS] version 3 is recorded as pending
+  [PASS] missing versions are identified as [1, 2]
+  [PASS] processor reports it is waiting for version 1
+  [PASS] no versions have been applied
+
+========================================================================
+SCENARIO 3: Stale worker and fencing tokens (ORDER-FENCE)
+========================================================================
+  EXPECTED: worker B (token 2) ACCEPTED, worker A (token 1)
+            REJECTED STALE WORKER, order state unchanged by the rejection
+
+  Worker A acquires the lease and receives fencing token 1
+  Worker A pauses (e.g. long GC pause) and its lease expires
+  Worker B acquires the lease and receives fencing token 2
+  [PASS] worker A has token 1
+  [PASS] worker B has token 2
+
+  Worker B writes status SHIPPED with token 2
+    -> ACCEPTED: worker-B token 2 is greater than last accepted token 0
+    state: status=SHIPPED, last_accepted_token=2
+  [PASS] worker B (newer token 2) is ACCEPTED
+
+  Worker A wakes up and writes status PAID with stale token 1
+    -> REJECTED STALE WORKER: worker-A used token 1 on ORDER-FENCE, but token 2 was already accepted
+    state: status=SHIPPED, last_accepted_token=2
+  [PASS] worker A (older token 1) is REJECTED STALE WORKER
+  [PASS] rejection did not change status (still SHIPPED)
+  [PASS] rejection did not change last accepted token (still 2)
+  [PASS] rejection did not add a write to history
+
+  Accepted writes: [('worker-B', 2, 'SHIPPED')]
+
+========================================================================
+SUMMARY
+========================================================================
+  PASS: all scenario checks passed
+[exit code: 0]
+
+$ python3 -m unittest discover -s tests -v
+test_invalid_status_is_rejected_without_creating_state (test_fencing_tokens.InvalidFencedWriteTests) ... ok
+test_invalid_tokens_are_rejected (test_fencing_tokens.InvalidFencedWriteTests) ... ok
+test_equal_token_is_rejected (test_fencing_tokens.StaleWorkerTests) ... ok
+test_increasing_tokens_are_all_accepted (test_fencing_tokens.StaleWorkerTests) ... ok
+test_newer_token_is_accepted (test_fencing_tokens.StaleWorkerTests) ... ok
+test_older_token_is_rejected (test_fencing_tokens.StaleWorkerTests) ... ok
+test_rejected_stale_worker_does_not_change_state (test_fencing_tokens.StaleWorkerTests) ... ok
+test_tokens_are_tracked_per_order (test_fencing_tokens.StaleWorkerTests) ... ok
+test_workers_receive_tokens_1_and_2 (test_fencing_tokens.StaleWorkerTests) ... ok
+test_tokens_are_strictly_increasing (test_fencing_tokens.TokenIssuerTests) ... ok
+test_empty_order_id_is_rejected (test_order_processor.InvalidEventTests) ... ok
+test_negative_version_is_rejected (test_order_processor.InvalidEventTests) ... ok
+test_non_integer_version_is_rejected (test_order_processor.InvalidEventTests) ... ok
+test_processor_rejects_non_event_input (test_order_processor.InvalidEventTests) ... ok
+test_unknown_order_lookup_raises_key_error (test_order_processor.InvalidEventTests) ... ok
+test_unknown_status_is_rejected (test_order_processor.InvalidEventTests) ... ok
+test_version_zero_is_rejected (test_order_processor.InvalidEventTests) ... ok
+test_filling_part_of_the_gap_still_waits (test_order_processor.MissingEventTests) ... ok
+test_later_version_is_not_applied (test_order_processor.MissingEventTests) ... ok
+test_later_version_remains_pending (test_order_processor.MissingEventTests) ... ok
+test_missing_versions_are_identified (test_order_processor.MissingEventTests) ... ok
+test_order_does_not_jump_to_shipped (test_order_processor.MissingEventTests) ... ok
+test_processor_reports_waiting_for_version_1 (test_order_processor.MissingEventTests) ... ok
+test_duplicate_of_pending_event_is_ignored (test_order_processor.OutOfOrderDeliveryTests) ... ok
+test_duplicate_version_is_ignored_and_does_not_change_state (test_order_processor.OutOfOrderDeliveryTests) ... ok
+test_full_assignment_sequence_final_status_and_history (test_order_processor.OutOfOrderDeliveryTests) ... ok
+test_in_order_delivery_applies_immediately (test_order_processor.OutOfOrderDeliveryTests) ... ok
+test_multiple_pending_versions_drain_in_order (test_order_processor.OutOfOrderDeliveryTests) ... ok
+test_older_event_does_not_overwrite_newer_state (test_order_processor.OutOfOrderDeliveryTests) ... ok
+test_orders_are_tracked_independently (test_order_processor.OutOfOrderDeliveryTests) ... ok
+test_pending_version_is_applied_after_missing_version_arrives (test_order_processor.OutOfOrderDeliveryTests) ... ok
+test_version_2_before_version_1_is_held_as_pending (test_order_processor.OutOfOrderDeliveryTests) ... ok
+
+----------------------------------------------------------------------
+Ran 32 tests in 0.001s
+
+OK
+[exit code: 0]
+
+$ python3 -m compileall .
+Listing '.'...
+Listing './evidence'...
+Compiling './run_demo.py'...
+Listing './src'...
+Listing './src/order_simulation'...
+Listing './tests'...
+[exit code: 0]
