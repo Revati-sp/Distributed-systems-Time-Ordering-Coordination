@@ -64,24 +64,14 @@ All three scenarios run in memory, with no randomness, clocks or network calls, 
 ```bash
 git clone https://github.com/Revati-sp/Distributed-systems-Time-Ordering-Coordination.git
 cd Distributed-systems-Time-Ordering-Coordination
-python run_demo.py
-python -m unittest discover -s tests -v
+python3 run_demo.py
+python3 -m unittest discover -s tests -v
+python3 -m compileall .
 ```
 
-> **Note:** On macOS and some Linux systems, the interpreter is named `python3` and there is no `python` command. In that case, run the same commands with `python3`:
->
-> ```bash
-> python3 run_demo.py
-> python3 -m unittest discover -s tests -v
-> ```
+On Windows or systems where `python` already refers to Python 3, the same commands may be run with `python` instead of `python3`.
 
-You do not need to install anything. `run_demo.py` and the tests add `src/` to the import path themselves. `run_demo.py` exits with code `0` when every check passes and `1` otherwise.
-
-Optionally, check that every source file compiles:
-
-```bash
-python -m compileall .
-```
+You do not need to install anything. `run_demo.py` and the tests add `src/` to the import path themselves. `run_demo.py` exits with code `0` when every check passes and `1` otherwise. `compileall` confirms that every source file compiles.
 
 ## Correct Event Ordering Evidence
 
@@ -183,35 +173,46 @@ The order never jumps to `SHIPPED`. Version 3 waits in the pending collection, a
 
 ## Stale Worker Evidence
 
-Two workers compete to update `ORDER-FENCE`. Worker A gets token 1, pauses, and loses its lease. Worker B then gets token 2.
+Two workers compete to update `ORDER-FENCE`:
+
+1. Worker A gets token 1 and writes `CREATED`.
+2. Worker A pauses and its lease expires.
+3. Worker B gets token 2 and writes `PAID`.
+4. Worker A wakes up and tries to write `SHIPPED` with its stale token 1.
 
 ```text
 ========================================================================
 SCENARIO 3: Stale worker and fencing tokens (ORDER-FENCE)
 ========================================================================
-  EXPECTED: worker B (token 2) ACCEPTED, worker A (token 1)
-            REJECTED STALE WORKER, order state unchanged by the rejection
+  EXPECTED: worker A (token 1) writes CREATED, worker B (token 2) writes PAID,
+            worker A's late SHIPPED write with token 1 is REJECTED STALE WORKER,
+            order state unchanged by the rejection
 
   Worker A acquires the lease and receives fencing token 1
+  [PASS] worker A has token 1
+  Worker A writes status CREATED with token 1
+    -> ACCEPTED: worker-A token 1 is greater than last accepted token 0
+    state: status=CREATED, last_accepted_token=1, accepted_writes=[('worker-A', 1, 'CREATED')]
+  [PASS] worker A (token 1) CREATED write is ACCEPTED
+
   Worker A pauses (e.g. long GC pause) and its lease expires
   Worker B acquires the lease and receives fencing token 2
-  [PASS] worker A has token 1
   [PASS] worker B has token 2
+  Worker B writes status PAID with token 2
+    -> ACCEPTED: worker-B token 2 is greater than last accepted token 1
+    state: status=PAID, last_accepted_token=2, accepted_writes=[('worker-A', 1, 'CREATED'), ('worker-B', 2, 'PAID')]
+  [PASS] worker B (newer token 2) PAID write is ACCEPTED
 
-  Worker B writes status SHIPPED with token 2
-    -> ACCEPTED: worker-B token 2 is greater than last accepted token 0
-    state: status=SHIPPED, last_accepted_token=2
-  [PASS] worker B (newer token 2) is ACCEPTED
-
-  Worker A wakes up and writes status PAID with stale token 1
+  Worker A wakes up and writes status SHIPPED with stale token 1
     -> REJECTED STALE WORKER: worker-A used token 1 on ORDER-FENCE, but token 2 was already accepted
-    state: status=SHIPPED, last_accepted_token=2
-  [PASS] worker A (older token 1) is REJECTED STALE WORKER
-  [PASS] rejection did not change status (still SHIPPED)
+    state: status=PAID, last_accepted_token=2, accepted_writes=[('worker-A', 1, 'CREATED'), ('worker-B', 2, 'PAID')]
+  [PASS] worker A (older token 1) SHIPPED write is REJECTED STALE WORKER
+  [PASS] rejection did not change status (still PAID)
   [PASS] rejection did not change last accepted token (still 2)
-  [PASS] rejection did not add a write to history
+  [PASS] rejection did not change accepted-write history
+  [PASS] no SHIPPED write is recorded
 
-  Accepted writes: [('worker-B', 2, 'SHIPPED')]
+  Final accepted writes: [('worker-A', 1, 'CREATED'), ('worker-B', 2, 'PAID')]
 
 ========================================================================
 SUMMARY
@@ -219,13 +220,19 @@ SUMMARY
   PASS: all scenario checks passed
 ```
 
-Worker B's write with token 2 is accepted. Worker A's later write with token 1 is rejected with `StaleTokenError`. After the rejection, the status, the last accepted token and the write history are all unchanged.
+Both legitimate writes are accepted: worker A's `CREATED` with token 1, then worker B's `PAID` with token 2. Worker A's late `SHIPPED` write with token 1 is rejected with `StaleTokenError`. After the rejection, the status is still `PAID`, the last accepted token is still 2, the accepted-write history is unchanged, and no `SHIPPED` write is recorded.
 
 ## Automated Test Evidence
 
-Real output of `python3 -m unittest discover -s tests -v` (32 tests):
+Real output of `python3 -m unittest discover -s tests -v` (38 tests):
 
 ```text
+test_rejected_write_does_not_modify_accepted_write_history (test_fencing_tokens.DemoStaleWorkerScenarioTests) ... ok
+test_rejected_write_does_not_modify_highest_token (test_fencing_tokens.DemoStaleWorkerScenarioTests) ... ok
+test_rejected_write_does_not_modify_status (test_fencing_tokens.DemoStaleWorkerScenarioTests) ... ok
+test_worker_a_late_token_1_shipped_write_is_rejected (test_fencing_tokens.DemoStaleWorkerScenarioTests) ... ok
+test_worker_a_token_1_created_write_is_initially_accepted (test_fencing_tokens.DemoStaleWorkerScenarioTests) ... ok
+test_worker_b_token_2_paid_write_is_accepted (test_fencing_tokens.DemoStaleWorkerScenarioTests) ... ok
 test_invalid_status_is_rejected_without_creating_state (test_fencing_tokens.InvalidFencedWriteTests) ... ok
 test_invalid_tokens_are_rejected (test_fencing_tokens.InvalidFencedWriteTests) ... ok
 test_equal_token_is_rejected (test_fencing_tokens.StaleWorkerTests) ... ok
@@ -260,7 +267,7 @@ test_pending_version_is_applied_after_missing_version_arrives (test_order_proces
 test_version_2_before_version_1_is_held_as_pending (test_order_processor.OutOfOrderDeliveryTests) ... ok
 
 ----------------------------------------------------------------------
-Ran 32 tests in 0.001s
+Ran 38 tests in 0.001s
 
 OK
 ```
@@ -286,6 +293,7 @@ Each machine stamps events with its own local clock, and those clocks are never 
   - If a duplicate version arrives with different content, the first applied copy wins and the later one is ignored.
   - Following the assignment's rule, a write is accepted only if its token is **strictly greater** than the last accepted token. So in this simulation, each token authorizes a single write, and a second write with the same token is rejected.
   - The ordering processor and fencing store are isolated demonstrations because the assignment evaluates event ordering and stale-worker rejection as separate coordination scenarios; a production system would apply both protections to the same persistent order record.
+  - In a production order service, version ordering and fencing-token validation would normally protect the same persistent order record. This assignment keeps them isolated so that each required coordination behavior can be demonstrated and tested deterministically.
 
 ## Limitations
 
@@ -318,15 +326,18 @@ This is an **in-memory educational simulation**:
 
 **Stale worker and fencing tokens (`ORDER-FENCE`)**
 - [x] Worker A gets token 1 and worker B gets token 2: `TokenIssuer` in [fencing.py](src/order_simulation/fencing.py); `test_workers_receive_tokens_1_and_2`
-- [x] Worker B (newer token) is accepted: `test_newer_token_is_accepted`; scenario 3 in [run_demo.py](run_demo.py)
-- [x] Worker A (stale token) is rejected with `StaleTokenError`: `FencedOrderStore.write` in [fencing.py](src/order_simulation/fencing.py); `test_older_token_is_rejected`
-- [x] The rejection does not change state: `test_rejected_stale_worker_does_not_change_state`; [Stale Worker Evidence](#stale-worker-evidence)
+- [x] Worker A's token 1 `CREATED` write is accepted: `test_worker_a_token_1_created_write_is_initially_accepted`; scenario 3 in [run_demo.py](run_demo.py)
+- [x] Worker B (newer token 2) `PAID` write is accepted: `test_worker_b_token_2_paid_write_is_accepted`, `test_newer_token_is_accepted`
+- [x] Worker A's late `SHIPPED` write with stale token 1 is rejected with `StaleTokenError`: `FencedOrderStore.write` in [fencing.py](src/order_simulation/fencing.py); `test_worker_a_late_token_1_shipped_write_is_rejected`, `test_older_token_is_rejected`
+- [x] The rejection does not change status, highest token or accepted-write history: `test_rejected_write_does_not_modify_status`, `test_rejected_write_does_not_modify_highest_token`, `test_rejected_write_does_not_modify_accepted_write_history`; [Stale Worker Evidence](#stale-worker-evidence)
+- [x] Tokens are tracked independently per order: `test_tokens_are_tracked_per_order`
 - [x] Rule: a write is accepted only if its token is greater than the last accepted token: `token <= order.last_accepted_token` check in [fencing.py](src/order_simulation/fencing.py); `test_equal_token_is_rejected`
 
 **Validation and tests**
 - [x] Invalid versions (0, negative, non-integer) and unknown statuses are rejected with a clear error: `InvalidEventError` in [models.py](src/order_simulation/models.py); `InvalidEventTests`, `InvalidFencedWriteTests`
-- [x] Automated tests pass with `python -m unittest discover -s tests -v` (32 tests): [tests/](tests/); [Automated Test Evidence](#automated-test-evidence)
-- [x] Demo runs all three scenarios with PASS and status labels using `python run_demo.py`: [run_demo.py](run_demo.py)
+- [x] Automated tests pass with `python3 -m unittest discover -s tests -v` (38 tests): [tests/](tests/); [Automated Test Evidence](#automated-test-evidence)
+- [x] Demo runs all three scenarios with PASS and status labels using `python3 run_demo.py`: [run_demo.py](run_demo.py)
+- [x] All source files compile with `python3 -m compileall .`: [evidence/terminal-output.txt](evidence/terminal-output.txt)
 - [x] Deterministic: no randomness, timestamps or network calls: [src/order_simulation/](src/order_simulation/)
 - [x] Standard library only, no dependencies: [requirements.txt](requirements.txt)
 

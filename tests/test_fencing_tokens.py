@@ -86,6 +86,59 @@ class StaleWorkerTests(unittest.TestCase):
         self.assertEqual(self.store.get(self.order_id).last_accepted_token, 2)
 
 
+class DemoStaleWorkerScenarioTests(unittest.TestCase):
+    """The exact run_demo.py scenario: A writes CREATED (token 1), B writes PAID
+    (token 2), then A's late SHIPPED write with stale token 1 is rejected."""
+
+    def setUp(self):
+        issuer = TokenIssuer()
+        self.store = FencedOrderStore()
+        self.order_id = "ORDER-FENCE"
+        self.token_a = issuer.issue()
+        self.write_a = self.store.write(self.order_id, "worker-A", self.token_a, "CREATED")
+        self.token_b = issuer.issue()
+        self.write_b = self.store.write(self.order_id, "worker-B", self.token_b, "PAID")
+        self.order = self.store.get(self.order_id)
+
+    def attempt_stale_shipped_write(self):
+        with self.assertRaises(StaleTokenError) as ctx:
+            self.store.write(self.order_id, "worker-A", self.token_a, "SHIPPED")
+        return ctx.exception
+
+    def test_worker_a_token_1_created_write_is_initially_accepted(self):
+        self.assertEqual(self.write_a.token, 1)
+        self.assertEqual(self.write_a.status, "CREATED")
+        self.assertEqual(self.write_a.previous_token, 0)
+
+    def test_worker_b_token_2_paid_write_is_accepted(self):
+        self.assertEqual(self.write_b.token, 2)
+        self.assertEqual(self.write_b.previous_token, 1)
+        self.assertEqual(self.order.status, "PAID")
+
+    def test_worker_a_late_token_1_shipped_write_is_rejected(self):
+        error = self.attempt_stale_shipped_write()
+        self.assertEqual((error.worker, error.token, error.last_accepted_token), ("worker-A", 1, 2))
+
+    def test_rejected_write_does_not_modify_status(self):
+        self.attempt_stale_shipped_write()
+        self.assertEqual(self.order.status, "PAID")
+
+    def test_rejected_write_does_not_modify_highest_token(self):
+        self.attempt_stale_shipped_write()
+        self.assertEqual(self.order.last_accepted_token, 2)
+
+    def test_rejected_write_does_not_modify_accepted_write_history(self):
+        history_before = list(self.order.accepted_writes)
+        self.attempt_stale_shipped_write()
+
+        self.assertEqual(self.order.accepted_writes, history_before)
+        self.assertEqual(
+            [(w.worker, w.token, w.status) for w in self.order.accepted_writes],
+            [("worker-A", 1, "CREATED"), ("worker-B", 2, "PAID")],
+        )
+        self.assertNotIn("SHIPPED", [w.status for w in self.order.accepted_writes])
+
+
 class InvalidFencedWriteTests(unittest.TestCase):
     def test_invalid_tokens_are_rejected(self):
         store = FencedOrderStore()

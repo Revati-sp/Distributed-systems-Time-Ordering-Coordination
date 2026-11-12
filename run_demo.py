@@ -1,7 +1,7 @@
 """Run all three Module 7 scenarios and print deterministic, grader-friendly output.
 
 Usage:
-    python run_demo.py      (or: python3 run_demo.py)
+    python3 run_demo.py     (or `python run_demo.py` where `python` is Python 3)
 
 Exit code is 0 when every check passes and 1 otherwise.
 """
@@ -134,45 +134,70 @@ def scenario_missing_event():
 # ---------------------------------------------------------------------------
 def scenario_fencing_tokens():
     heading("SCENARIO 3: Stale worker and fencing tokens (ORDER-FENCE)")
-    print("  EXPECTED: worker B (token 2) ACCEPTED, worker A (token 1)")
-    print("            REJECTED STALE WORKER, order state unchanged by the rejection")
+    print("  EXPECTED: worker A (token 1) writes CREATED, worker B (token 2) writes PAID,")
+    print("            worker A's late SHIPPED write with token 1 is REJECTED STALE WORKER,")
+    print("            order state unchanged by the rejection")
     issuer = TokenIssuer()
     store = FencedOrderStore()
     order_id = "ORDER-FENCE"
 
+    def show_fenced_state(order):
+        print(f"    state: status={order.status}, last_accepted_token={order.last_accepted_token}, "
+              f"accepted_writes={[(w.worker, w.token, w.status) for w in order.accepted_writes]}")
+
+    def show_accepted(write):
+        print(f"    -> ACCEPTED: {write.worker} token {write.token} is greater than "
+              f"last accepted token {write.previous_token}")
+
+    # Step 1-2: worker A holds the lease and writes CREATED.
     token_a = issuer.issue()
     print(f"\n  Worker A acquires the lease and receives fencing token {token_a}")
-    print("  Worker A pauses (e.g. long GC pause) and its lease expires")
+    check("worker A has token 1", token_a == 1)
+    print(f"  Worker A writes status CREATED with token {token_a}")
+    write_a = store.write(order_id, "worker-A", token_a, "CREATED")
+    order = store.get(order_id)
+    show_accepted(write_a)
+    show_fenced_state(order)
+    check("worker A (token 1) CREATED write is ACCEPTED", order.status == "CREATED")
+
+    # Step 3-5: worker A pauses, its lease expires, worker B takes over and writes PAID.
+    print("\n  Worker A pauses (e.g. long GC pause) and its lease expires")
     token_b = issuer.issue()
     print(f"  Worker B acquires the lease and receives fencing token {token_b}")
-    check("worker A has token 1", token_a == 1)
     check("worker B has token 2", token_b == 2)
+    print(f"  Worker B writes status PAID with token {token_b}")
+    write_b = store.write(order_id, "worker-B", token_b, "PAID")
+    show_accepted(write_b)
+    show_fenced_state(order)
+    check("worker B (newer token 2) PAID write is ACCEPTED", order.status == "PAID")
 
-    print(f"\n  Worker B writes status SHIPPED with token {token_b}")
-    write_b = store.write(order_id, "worker-B", token_b, "SHIPPED")
-    order = store.get(order_id)
-    print(f"    -> ACCEPTED: {write_b.worker} token {write_b.token} is greater than "
-          f"last accepted token {write_b.previous_token}")
-    print(f"    state: status={order.status}, last_accepted_token={order.last_accepted_token}")
-    check("worker B (newer token 2) is ACCEPTED", order.status == "SHIPPED")
-
-    print(f"\n  Worker A wakes up and writes status PAID with stale token {token_a}")
+    # Step 6: record the state before the stale attempt.
     status_before = order.status
     token_before = order.last_accepted_token
     writes_before = list(order.accepted_writes)
+
+    # Step 7-8: worker A wakes up and tries to write SHIPPED with its stale token.
+    print(f"\n  Worker A wakes up and writes status SHIPPED with stale token {token_a}")
     rejected = False
     try:
-        store.write(order_id, "worker-A", token_a, "PAID")
+        store.write(order_id, "worker-A", token_a, "SHIPPED")
     except StaleTokenError as error:
         rejected = True
         print(f"    -> {error}")
-    print(f"    state: status={order.status}, last_accepted_token={order.last_accepted_token}")
-    check("worker A (older token 1) is REJECTED STALE WORKER", rejected)
-    check("rejection did not change status (still SHIPPED)", order.status == status_before)
+    show_fenced_state(order)
+
+    # Step 9: prove the rejection changed nothing.
+    check("worker A (older token 1) SHIPPED write is REJECTED STALE WORKER", rejected)
+    check("rejection did not change status (still PAID)",
+          order.status == status_before == "PAID")
     check("rejection did not change last accepted token (still 2)",
-          order.last_accepted_token == token_before)
-    check("rejection did not add a write to history", order.accepted_writes == writes_before)
-    print(f"\n  Accepted writes: {[(w.worker, w.token, w.status) for w in order.accepted_writes]}")
+          order.last_accepted_token == token_before == 2)
+    check("rejection did not change accepted-write history",
+          order.accepted_writes == writes_before)
+    check("no SHIPPED write is recorded",
+          all(w.status != "SHIPPED" for w in order.accepted_writes))
+    print(f"\n  Final accepted writes: "
+          f"{[(w.worker, w.token, w.status) for w in order.accepted_writes]}")
 
 
 def main():
