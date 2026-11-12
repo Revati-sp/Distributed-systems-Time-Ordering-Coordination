@@ -285,7 +285,7 @@ Each machine stamps events with its own local clock, and those clocks are never 
   - An order's status is `UNKNOWN` until its version 1 is applied.
   - If a duplicate version arrives with different content, the first applied copy wins and the later one is ignored.
   - Following the assignment's rule, a write is accepted only if its token is **strictly greater** than the last accepted token. So in this simulation, each token authorizes a single write, and a second write with the same token is rejected.
-  - The ordering processor and the fencing store are demonstrated separately to keep each concept easy to follow.
+  - The ordering processor and fencing store are isolated demonstrations because the assignment evaluates event ordering and stale-worker rejection as separate coordination scenarios; a production system would apply both protections to the same persistent order record.
 
 ## Limitations
 
